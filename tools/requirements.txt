@@ -1,0 +1,4 @@
+requests
+certifi
+transformers
+torch
