@@ -70,7 +70,7 @@ class PlumberOrchestrator:
                     )
                     if r.status_code == 200:
                         return r.json()
-                        else:
+                    else:
                         print(f"Bouncer rejected request: {r.status_code} - {r.text}")
             except Exception as e:
                 print(f"Bouncer connection failed: {e}")

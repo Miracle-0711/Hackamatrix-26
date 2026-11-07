@@ -63,6 +63,7 @@ app.add_exception_handler(
 class ScanInput(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     probe_exposure: bool = False
+    text: str = ""
 
 
 class UnsafeTarget(ValueError):
@@ -478,7 +479,39 @@ async def scan(
                 else []
             )
 
+            # Calculate a basic score_delta and findings based on Bouncer's checks
+            score_delta = 0
+            findings = []
+            
+            final_domain_signals = domain_signals(result["url"])
+            if final_domain_signals["contains_punycode"]:
+                 score_delta += 35
+                 findings.append({
+                     "severity": "HIGH",
+                     "code": "PUNYCODE_HOMOGRAPH_URL",
+                     "message": "Domain uses IDN Punycode (xn--) often abused in homograph phishing attacks."
+                 })
+                 
+            if final_domain_signals["brand_similarity_signals"]:
+                 score_delta += 25
+                 brand = final_domain_signals["brand_similarity_signals"][0]["brand"]
+                 findings.append({
+                     "severity": "MEDIUM",
+                     "code": "BRAND_IMPERSONATION",
+                     "message": f"URL exhibits visual similarity to known brand ({brand})."
+                 })
+            
+            if exposure:
+                 score_delta += 40
+                 findings.append({
+                     "severity": "HIGH",
+                     "code": "EXPOSED_SECRETS",
+                     "message": "Target domain is exposing sensitive configuration files (.env or .git/config)."
+                 })
+
             return {
+                "score_delta": score_delta,
+                "findings": findings,
                 "submitted_url": str(normalize_url(payload.url)),
                 "final_url": result["url"],
                 "http_status": result["status"],
