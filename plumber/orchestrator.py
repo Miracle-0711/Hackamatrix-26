@@ -40,6 +40,42 @@ class PlumberOrchestrator:
     ) -> Dict[str, Any]:
         """3-second circuit breaker for Bouncer (URL Phishing & Scam Detection)."""
         if self.bouncer_url:
+
+            import jwt
+            import os
+            import time
+            
+            # The Plumber needs the same secret to sign the token
+            jwt_secret = os.getenv("JWT_SECRET", "my-super-secret-32-byte-key-here")
+            token = jwt.encode(
+                {
+                    "iss": "bouncer-auth",
+                    "aud": "bouncer-api",
+                    "sub": "plumber-service",
+                    "exp": int(time.time()) + 60,
+                    "scope": "scan:exposure"
+                },
+                jwt_secret,
+                algorithm="HS256"
+            )
+            headers = {"Authorization": f"Bearer {token}"}
+            # --- END AUTHENTICATION LOGIC ---
+
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    r = await client.post(
+                        self.bouncer_url, 
+                        json={"url": url, "text": message_text, "probe_exposure": True},
+                        headers=headers # Add headers to the request
+                    )
+                    if r.status_code == 200:
+                        return r.json()
+                        else:
+                        print(f"Bouncer rejected request: {r.status_code} - {r.text}")
+            except Exception as e:
+                print(f"Bouncer connection failed: {e}")
+                pass
+
             try:
                 async with httpx.AsyncClient(timeout=3.0) as client:
                     r = await client.post(

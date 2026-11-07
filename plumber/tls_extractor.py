@@ -90,11 +90,11 @@ class RawTLSExtractor:
                 cipher_info = ssock.cipher()
                 cipher_suite = cipher_info[0] if cipher_info else "UNKNOWN"
 
-                if hasattr(ssock._sslobj, "get_unverified_chain"):
-                    raw_chain = ssock._sslobj.get_unverified_chain()
-                    der_chain = [c.public_bytes(ssl.ENCODING_DER) for c in raw_chain]
-                    if der_chain:
-                        return der_chain, tls_version, cipher_suite
+               # if hasattr(ssock._sslobj, "get_unverified_chain"):
+                #    raw_chain = ssock._sslobj.get_unverified_chain()
+                 #   der_chain = [c.public_bytes(ssl.ENCODING_DER) for c in raw_chain]
+                  #  if der_chain:
+                   #     return der_chain, tls_version, cipher_suite
 
                 leaf_der = ssock.getpeercert(binary_form=True)
 
