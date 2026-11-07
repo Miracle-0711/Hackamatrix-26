@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-aiohttp
-idna
-PyJWT
-slowapi
-redis
