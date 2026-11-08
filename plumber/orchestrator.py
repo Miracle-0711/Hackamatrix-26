@@ -62,7 +62,7 @@ class PlumberOrchestrator:
             # --- END AUTHENTICATION LOGIC ---
 
             try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
+                async with httpx.AsyncClient(timeout=8.0) as client:
                     r = await client.post(
                         self.bouncer_url, 
                         json={"url": url, "text": message_text, "probe_exposure": True},
@@ -74,16 +74,6 @@ class PlumberOrchestrator:
                         print(f"Bouncer rejected request: {r.status_code} - {r.text}")
             except Exception as e:
                 print(f"Bouncer connection failed: {e}")
-                pass
-
-            try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    r = await client.post(
-                        self.bouncer_url, json={"url": url, "text": message_text}
-                    )
-                    if r.status_code == 200:
-                        return r.json()
-            except Exception:
                 pass
 
         # Built-in fallback heuristics so the MVP works standalone if Bouncer is offline
@@ -128,22 +118,26 @@ class PlumberOrchestrator:
 
         return {"service": "BOUNCER_FALLBACK", "score_delta": min(score_delta, 70), "findings": findings}
 
-    async def _call_librarian_with_breaker(self, domain: str) -> Dict[str, Any]:
-        """3-second circuit breaker for Librarian (External Threat Intel & Domain Context)."""
+    async def _call_librarian_with_breaker(self, target_url: str, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         if self.librarian_url:
             try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    r = await client.post(self.librarian_url, json={"domain": domain})
+                async with httpx.AsyncClient(timeout=4.0) as client:
+                    r = await client.post(
+                        self.librarian_url,
+                        json={"target_url": target_url, "findings": findings}
+                    )
                     if r.status_code == 200:
                         return r.json()
-            except Exception:
+            except Exception as e:
+                print(f"Librarian connection failed: {e}")
                 pass
-
+        
+        # Fallback if offline
         return {
             "service": "LIBRARIAN_FALLBACK",
             "threat_intel_sources": ["Mozilla_CCADB_OneCRL", "eMudhra_G3_Revocation_Set", "Certificate_Transparency_SCT"],
             "score_delta": 0,
-            "findings": [],
+            "findings": []
         }
 
     async def investigate(self, url: str, pasted_message: str = "") -> Dict[str, Any]:

@@ -7,7 +7,7 @@ from plumber.orchestrator import PlumberOrchestrator
 
 orchestrator = PlumberOrchestrator(
     bouncer_url="http://127.0.0.1:8001/v1/scan",
-    librarian_url=None # Update this when you build the Librarian
+    librarian_url="http://127.0.0.1:8002/v1/threat-intel" # Update this when you build the Librarian
 )
 
 @asynccontextmanager

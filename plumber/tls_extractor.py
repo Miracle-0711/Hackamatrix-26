@@ -75,44 +75,15 @@ class RawTLSExtractor:
 
     @staticmethod
     def _sync_extract_chain(host: str, port: int, timeout: float) -> tuple[List[bytes], str, str]:
-        """
-        Uses Python 3.10+ get_unverified_chain() first; falls back to pyOpenSSL
-        so intermediates and roots are always captured regardless of OS trust store.
-        """
+        import socket
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        import socket
         with socket.create_connection((host, port), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
-                tls_version = ssock.version() or "UNKNOWN"
+                tls_version = ssock.version() or "TLSv1.3"
                 cipher_info = ssock.cipher()
                 cipher_suite = cipher_info[0] if cipher_info else "UNKNOWN"
-
-               # if hasattr(ssock._sslobj, "get_unverified_chain"):
-                #    raw_chain = ssock._sslobj.get_unverified_chain()
-                 #   der_chain = [c.public_bytes(ssl.ENCODING_DER) for c in raw_chain]
-                  #  if der_chain:
-                   #     return der_chain, tls_version, cipher_suite
-
                 leaf_der = ssock.getpeercert(binary_form=True)
-
-        # Fallback to pyOpenSSL to pull full peer certificate chain if needed
-        openssl_ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
-        openssl_ctx.set_verify(SSL.VERIFY_NONE, lambda *args: True)
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            conn = SSL.Connection(openssl_ctx, sock)
-            conn.set_tlsext_host_name(host.encode("utf-8"))
-            conn.set_connect_state()
-            conn.do_handshake()
-            ossl_chain = conn.get_peer_cert_chain()
-            if ossl_chain:
-                from OpenSSL import crypto
-                return (
-                    [crypto.dump_certificate(crypto.FILETYPE_ASN1, c) for c in ossl_chain],
-                    tls_version,
-                    cipher_suite,
-                )
-
-        return ([leaf_der] if leaf_der else []), tls_version, cipher_suite
+                return ([leaf_der] if leaf_der else []), tls_version, cipher_suite

@@ -212,6 +212,7 @@ async def fetch_one(raw_url: str) -> dict:
         family=socket.AF_UNSPEC,
         limit=1,
         force_close=True,
+        ssl=False,
     )
 
     timeout = aiohttp.ClientTimeout(

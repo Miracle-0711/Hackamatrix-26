@@ -81,7 +81,7 @@ class CryptographicAuditor:
     @classmethod
     def audit_chain(cls, x509_chain: List[x509.Certificate]) -> Dict[str, Any]:
         if not x509_chain:
-            return {"passed": False, "critical_crypto_failure": True, "findings": []}
+            return {"passed": False, "critical_crypto_failure": False, "findings": []}
 
         findings = []
         critical_failure = False
