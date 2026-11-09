@@ -1,7 +1,9 @@
-fastapi
-uvicorn[standard]
-aiohttp
-idna
-PyJWT
-slowapi
-redis
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+aiohttp>=3.10.0
+idna>=3.8
+PyJWT>=2.8.0
+slowapi>=0.1.9
+redis>=5.0.0
+
