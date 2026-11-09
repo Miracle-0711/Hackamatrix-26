@@ -1,8 +1,10 @@
+
 import asyncio
 import ipaddress
 import os
 import re
 import socket
+from html.parser import HTMLParser
 from http.cookies import SimpleCookie
 from urllib.parse import urljoin
 
@@ -30,15 +32,12 @@ MAX_BODY = 256 * 1024
 MAX_REDIRECTS = 6
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 
-# Configure this with brands relevant to your product.
-# Similarity is only a signal, never proof of impersonation.
 BRAND_DOMAINS = {
     "paypal": "paypal.com",
     "google": "google.com",
     "microsoft": "microsoft.com",
 }
 
-# Conservative exclusions for address-translation/transition mechanisms.
 BLOCKED_NETWORKS = [
     ipaddress.ip_network("64:ff9b::/96"),
     ipaddress.ip_network("64:ff9b:1::/48"),
@@ -46,7 +45,7 @@ BLOCKED_NETWORKS = [
     ipaddress.ip_network("2001::/32"),
 ]
 
-app = FastAPI(title="Bouncer", version="0.1.0")
+app = FastAPI(title="Bouncer", version="0.4.0")
 bearer = HTTPBearer()
 
 limiter = Limiter(
@@ -80,9 +79,7 @@ def authenticate(
             algorithms=["HS256"],
             issuer=JWT_ISSUER,
             audience=JWT_AUDIENCE,
-            options={
-                "require": ["exp", "iss", "aud", "sub"],
-            },
+            options={"require": ["exp", "iss", "aud", "sub"]},
         )
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Invalid or expired token")
@@ -93,7 +90,9 @@ def public_ip(value: str) -> str:
 
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
-            raise UnsafeTarget("IPv4-mapped IPv6 addresses are not allowed")
+            raise UnsafeTarget(
+                "IPv4-mapped IPv6 addresses are not allowed"
+            )
 
     if not address.is_global or any(
         address in network for network in BLOCKED_NETWORKS
@@ -104,9 +103,8 @@ def public_ip(value: str) -> str:
 
 
 def normalize_url(raw: str) -> URL:
-    if (
-        "\\" in raw
-        or any(ord(char) < 32 or ord(char) == 127 for char in raw)
+    if "\\" in raw or any(
+        ord(char) < 32 or ord(char) == 127 for char in raw
     ):
         raise UnsafeTarget("URL contains forbidden characters")
 
@@ -157,13 +155,9 @@ def normalize_url(raw: str) -> URL:
 
 
 class PublicResolver(AbstractResolver):
-    """
-    The connector uses these exact validated addresses.
-    It does not independently resolve the hostname afterward.
-    """
-
     async def resolve(self, host, port=0, family=socket.AF_INET):
         loop = asyncio.get_running_loop()
+
         records = await asyncio.wait_for(
             loop.getaddrinfo(
                 host,
@@ -177,14 +171,13 @@ class PublicResolver(AbstractResolver):
         results = []
         seen = set()
 
-        # Fail closed if ANY returned address is disallowed.
         for address_family, _, proto, _, sockaddr in records:
             address = public_ip(sockaddr[0])
 
             if address in seen:
                 continue
-            seen.add(address)
 
+            seen.add(address)
             results.append({
                 "hostname": host,
                 "host": address,
@@ -212,7 +205,6 @@ async def fetch_one(raw_url: str) -> dict:
         family=socket.AF_UNSPEC,
         limit=1,
         force_close=True,
-        ssl=False,
     )
 
     timeout = aiohttp.ClientTimeout(
@@ -221,7 +213,6 @@ async def fetch_one(raw_url: str) -> dict:
         sock_read=5,
     )
 
-    # Separate session per hop: no cross-origin cookie propagation.
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout,
@@ -229,21 +220,24 @@ async def fetch_one(raw_url: str) -> dict:
         trust_env=False,
         auto_decompress=False,
         headers={
-            "User-Agent": "BouncerScanner/0.1",
+            "User-Agent": "BouncerScanner/0.4",
             "Accept-Encoding": "identity",
         },
     ) as session:
+
         async with session.get(
             url,
             allow_redirects=False,
             max_line_size=8190,
             max_field_size=8190,
         ) as response:
+
             body = bytearray()
 
             async for chunk in response.content.iter_chunked(8192):
                 remaining = MAX_BODY + 1 - len(body)
                 body.extend(chunk[:remaining])
+
                 if len(body) > MAX_BODY:
                     break
 
@@ -268,9 +262,10 @@ async def follow_redirects(raw_url: str):
     for hop in range(MAX_REDIRECTS + 1):
         if current in seen:
             raise UnsafeTarget("Redirect loop detected")
-        seen.add(current)
 
+        seen.add(current)
         result = await fetch_one(current)
+
         chain.append({
             "url": result["url"],
             "status": result["status"],
@@ -284,9 +279,9 @@ async def follow_redirects(raw_url: str):
         if hop == MAX_REDIRECTS:
             raise UnsafeTarget("Redirect limit exceeded")
 
-        current = str(normalize_url(
-            urljoin(result["url"], location)
-        ))
+        current = str(
+            normalize_url(urljoin(result["url"], location))
+        )
 
     raise UnsafeTarget("Redirect limit exceeded")
 
@@ -296,15 +291,73 @@ def edit_distance(left: str, right: str) -> int:
 
     for row, char_left in enumerate(left, 1):
         current = [row]
+
         for column, char_right in enumerate(right, 1):
             current.append(min(
                 current[-1] + 1,
                 previous[column] + 1,
                 previous[column - 1] + (char_left != char_right),
             ))
+
         previous = current
 
     return previous[-1]
+
+
+def inspect_url_risks(raw_url: str) -> list:
+    findings = []
+    url = normalize_url(raw_url)
+    host = url.host.lower()
+    path_query = (url.path + "?" + url.query_string).lower()
+
+    suspicious_words = [
+        "login", "signin", "verify", "verification",
+        "secure", "account", "password", "update",
+        "wallet", "banking", "confirm", "credential",
+        "recover", "suspended",
+    ]
+
+    matched_words = [
+        word for word in suspicious_words
+        if word in path_query
+    ]
+
+    if matched_words:
+        findings.append({
+            "severity": "INFO",
+            "code": "SUSPICIOUS_URL_KEYWORDS",
+            "message": (
+                "URL contains account-related keywords. "
+                "This alone does not prove phishing."
+            ),
+            "evidence": matched_words,
+        })
+
+    if len(host.split(".")) >= 5:
+        findings.append({
+            "severity": "MEDIUM",
+            "code": "EXCESSIVE_SUBDOMAINS",
+            "message": "The hostname contains an unusually large number of subdomains.",
+        })
+
+    try:
+        ipaddress.ip_address(host)
+        findings.append({
+            "severity": "MEDIUM",
+            "code": "IP_ADDRESS_URL",
+            "message": "The website uses an IP address instead of a domain name.",
+        })
+    except ValueError:
+        pass
+
+    if len(url.query_string) > 200:
+        findings.append({
+            "severity": "INFO",
+            "code": "LONG_URL_QUERY",
+            "message": "The URL contains an unusually long query string.",
+        })
+
+    return findings
 
 
 def domain_signals(url: str) -> dict:
@@ -316,7 +369,11 @@ def domain_signals(url: str) -> dict:
         if host == official or host.endswith("." + official):
             continue
 
-        distance = min(edit_distance(label, brand) for label in labels)
+        distance = min(
+            edit_distance(label, brand)
+            for label in labels
+        )
+
         if distance <= 2:
             matches.append({
                 "brand": brand,
@@ -343,6 +400,7 @@ def inspect_headers(result: dict) -> dict:
 
     for raw_cookie in result["cookies"]:
         parsed = SimpleCookie()
+
         try:
             parsed.load(raw_cookie)
 
@@ -352,6 +410,7 @@ def inspect_headers(result: dict) -> dict:
 
             for name, cookie in parsed.items():
                 same_site = str(cookie["samesite"]).lower()
+
                 cookie_results.append({
                     "name": name,
                     "secure": bool(cookie["secure"]),
@@ -364,11 +423,16 @@ def inspect_headers(result: dict) -> dict:
                         same_site != "none" or bool(cookie["secure"])
                     ),
                 })
+
         except Exception:
             cookie_results.append({"parse_error": True})
 
     hsts = headers.get("strict-transport-security", "")
-    max_age = re.search(r"(?:^|;)\s*max-age\s*=\s*(\d+)", hsts, re.I)
+    max_age = re.search(
+        r"(?:^|;)\s*max-age\s*=\s*(\d+)",
+        hsts,
+        re.I,
+    )
 
     return {
         "transport_https": https,
@@ -395,6 +459,110 @@ def inspect_headers(result: dict) -> dict:
     }
 
 
+class FormInspector(HTMLParser):
+    """Inspect form blocks and inputs without executing page scripts."""
+
+    def __init__(self, page_url: str):
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.page_origin = normalize_url(page_url).origin()
+        self.current_form = None
+        self.password_form_found = False
+        self.external_form_found = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        tag = tag.lower()
+
+        if tag == "form":
+            action = attrs.get("action", "").strip()
+            action_url = (
+                self.page_url if not action
+                else urljoin(self.page_url, action)
+            )
+
+            try:
+                parsed_action = normalize_url(action_url)
+                external = parsed_action.origin() != self.page_origin
+            except (UnsafeTarget, ValueError):
+                external = False
+
+            self.current_form = {
+                "external": external,
+                "password": False,
+            }
+
+        elif tag == "input" and self.current_form is not None:
+            if str(attrs.get("type", "")).lower() == "password":
+                self.current_form["password"] = True
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "form" and self.current_form is not None:
+            if self.current_form["password"]:
+                self.password_form_found = True
+
+            if self.current_form["external"]:
+                self.external_form_found = True
+
+            self.current_form = None
+
+
+def inspect_phishing_content(result: dict) -> list:
+    findings = []
+
+    content_type = result["headers"].get(
+        "content-type", ""
+    ).lower()
+
+    if "text/html" not in content_type:
+        return findings
+
+    html = result["body"].decode("utf-8", errors="replace")
+    parser = FormInspector(result["url"])
+
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        findings.append({
+            "severity": "INFO",
+            "code": "HTML_PARSE_INCOMPLETE",
+            "message": "The HTML could not be fully inspected.",
+        })
+
+    if parser.password_form_found:
+        findings.append({
+            "severity": "INFO",
+            "code": "PASSWORD_FORM_DETECTED",
+            "message": (
+                "A password input was found inside a form. "
+                "This alone does not prove phishing."
+            ),
+        })
+
+    if parser.external_form_found:
+        findings.append({
+            "severity": "MEDIUM",
+            "code": "EXTERNAL_FORM_ACTION",
+            "message": (
+                "A form submits data to a different origin. "
+                "Manual review is required."
+            ),
+        })
+
+    if parser.password_form_found and parser.external_form_found:
+        findings.append({
+            "severity": "HIGH",
+            "code": "EXTERNAL_CREDENTIAL_SUBMISSION",
+            "message": (
+                "A password form submits data to an external origin. "
+                "This is a strong phishing indicator."
+            ),
+        })
+
+    return findings
+
+
 async def probe_exposures(final_url: str) -> list:
     origin = str(normalize_url(final_url).origin())
     findings = []
@@ -402,7 +570,6 @@ async def probe_exposures(final_url: str) -> list:
     for path in ("/.env", "/.git/config"):
         result = await fetch_one(origin + path)
 
-        # Do not follow exposure-probe redirects.
         if result["status"] != 200:
             continue
 
@@ -419,17 +586,20 @@ async def probe_exposures(final_url: str) -> list:
             continue
 
         text = result["body"].decode("utf-8", errors="replace")
-        content_type = result["headers"].get("content-type", "").lower()
+        content_type = result["headers"].get(
+            "content-type", ""
+        ).lower()
 
         if "text/html" in content_type or re.search(
-            r"<!doctype\s+html|<html\b", text[:2048], re.I
+            r"<!doctype\s+html|<html\b",
+            text[:2048],
+            re.I,
         ):
             continue
 
         if path == "/.env":
             assignments = re.findall(
-                r"(?m)^\s*(?:export\s+)?"
-                r"[A-Z_][A-Z0-9_]*\s*=\s*[^\r\n]+",
+                r"(?m)^\s*(?:export\s+)?[A-Z_][A-Z0-9_]*\s*=\s*[^\r\n]+",
                 text,
             )
             matched = len(assignments) >= 2
@@ -450,9 +620,64 @@ async def probe_exposures(final_url: str) -> list:
                 "requires_review": True,
             })
 
-        # Never return file bodies or extracted secret values.
-
     return findings
+
+
+def calculate_verdict(
+    findings: list,
+    domain_info: dict,
+    exposure: list,
+) -> tuple:
+    score = 0
+
+    if domain_info["contains_punycode"]:
+        score += 20
+        findings.append({
+            "severity": "MEDIUM",
+            "code": "PUNYCODE_DOMAIN",
+            "message": "The hostname contains an IDN Punycode label.",
+        })
+
+    if domain_info["brand_similarity_signals"]:
+        score += 30
+        brand = domain_info["brand_similarity_signals"][0]["brand"]
+        findings.append({
+            "severity": "HIGH",
+            "code": "BRAND_IMPERSONATION",
+            "message": f"The hostname resembles the brand {brand}.",
+        })
+
+    codes = {item["code"] for item in findings}
+
+    if "EXTERNAL_CREDENTIAL_SUBMISSION" in codes:
+        score += 50
+    elif "EXTERNAL_FORM_ACTION" in codes:
+        score += 20
+
+    if "IP_ADDRESS_URL" in codes:
+        score += 15
+
+    if "EXCESSIVE_SUBDOMAINS" in codes:
+        score += 10
+
+    if exposure:
+        score += 40
+        findings.append({
+            "severity": "HIGH",
+            "code": "EXPOSED_CONFIGURATION",
+            "message": "A potentially exposed configuration file was detected.",
+        })
+
+    score = min(score, 100)
+
+    if score >= 70:
+        verdict = "critical"
+    elif score >= 40:
+        verdict = "suspicious"
+    else:
+        verdict = "not_assessed"
+
+    return score, verdict, findings
 
 
 @app.post("/v1/scan")
@@ -480,35 +705,19 @@ async def scan(
                 else []
             )
 
-            # Calculate a basic score_delta and findings based on Bouncer's checks
-            score_delta = 0
-            findings = []
-            
-            final_domain_signals = domain_signals(result["url"])
-            if final_domain_signals["contains_punycode"]:
-                 score_delta += 35
-                 findings.append({
-                     "severity": "HIGH",
-                     "code": "PUNYCODE_HOMOGRAPH_URL",
-                     "message": "Domain uses IDN Punycode (xn--) often abused in homograph phishing attacks."
-                 })
-                 
-            if final_domain_signals["brand_similarity_signals"]:
-                 score_delta += 25
-                 brand = final_domain_signals["brand_similarity_signals"][0]["brand"]
-                 findings.append({
-                     "severity": "MEDIUM",
-                     "code": "BRAND_IMPERSONATION",
-                     "message": f"URL exhibits visual similarity to known brand ({brand})."
-                 })
-            
-            if exposure:
-                 score_delta += 40
-                 findings.append({
-                     "severity": "HIGH",
-                     "code": "EXPOSED_SECRETS",
-                     "message": "Target domain is exposing sensitive configuration files (.env or .git/config)."
-                 })
+            submitted_domain = domain_signals(payload.url)
+            final_domain = domain_signals(result["url"])
+
+            findings = inspect_phishing_content(result)
+
+            findings.extend(inspect_url_risks(payload.url))
+            findings.extend(inspect_url_risks(result["url"]))
+
+            score_delta, verdict, findings = calculate_verdict(
+                findings,
+                final_domain,
+                exposure,
+            )
 
             return {
                 "score_delta": score_delta,
@@ -517,23 +726,32 @@ async def scan(
                 "final_url": result["url"],
                 "http_status": result["status"],
                 "redirect_chain": chain,
-                "submitted_domain": domain_signals(payload.url),
-                "final_domain": domain_signals(result["url"]),
+                "submitted_domain": submitted_domain,
+                "final_domain": final_domain,
                 "security_headers": inspect_headers(result),
                 "exposure_findings": exposure,
                 "body_truncated": result["body_truncated"],
-                "verdict": "not_assessed",
+                "verdict": verdict,
+                "detection_note": (
+                    "This is a heuristic assessment, not a confirmed "
+                    "threat-intelligence verdict. NOT_ASSESSED means "
+                    "insufficient evidence; it does not mean safe."
+                ),
                 "limitations": [
                     "HTTP redirects only; JavaScript is not executed",
                     "No full Unicode-confusable analysis",
                     "No RDAP, WHOIS, SPF, or DMARC lookup yet",
-                    "No malware or phishing verdict from these signals alone",
+                    "No direct Google Safe Browsing API integration",
+                    "No malware verdict from these signals alone",
+                    "Heuristic findings require manual review",
                 ],
             }
 
     except UnsafeTarget as exc:
         raise HTTPException(422, str(exc))
+
     except (asyncio.TimeoutError, TimeoutError):
         raise HTTPException(504, "Scan time limit exceeded")
+
     except (aiohttp.ClientError, OSError):
         raise HTTPException(502, "Target could not be fetched safely")
