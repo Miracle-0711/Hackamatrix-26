@@ -1,22 +1,23 @@
+
 import { api, USE_MOCK } from './api.js';
 
-// Completed and failed states
-export const isDone = (s) =>
+export const isDone = (status) =>
   ['completed', 'complete', 'done', 'finished'].includes(
-    String(s).toLowerCase()
+    String(status).toLowerCase()
   );
 
-export const isFailed = (s) =>
-  ['failed', 'error'].includes(String(s).toLowerCase());
+export const isFailed = (status) =>
+  ['failed', 'error'].includes(String(status).toLowerCase());
 
-// ---- MOCK (preview only) ----
-const mockStarts = new Map();
+// ---- MOCK MODE ----
+
+const mockScans = new Map();
 
 const mock = {
   start: async () => {
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((resolve) => setTimeout(resolve, 400));
 
-    const scan_id = 'MOCK-' + Date.now();
+    const scan_id = `MOCK-${Date.now()}`;
 
     const result = {
       scan_id,
@@ -32,13 +33,14 @@ const mock = {
       },
     };
 
-    mockStarts.set(scan_id, result);
+    mockScans.set(scan_id, result);
     return result;
   },
 
   get: async (id) => {
-    await new Promise((r) => setTimeout(r, 300));
-    return mockStarts.get(id) || {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    return mockScans.get(id) || {
       scan_id: id,
       status: 'error',
       message: 'Mock scan not found.',
@@ -49,8 +51,6 @@ const mock = {
 
 // ---- REAL API ----
 
-// Backend directly returns the investigation report.
-// There is no separate scan-ID polling endpoint.
 const realScans = new Map();
 
 export async function startScan(url) {
@@ -63,13 +63,15 @@ export async function startScan(url) {
   });
 
   const scan_id =
-    data.scan_id || `SCAN-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    data.scan_id ||
+    `SCAN-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  // Keep frontend status separate from backend report status.
   const result = {
     scan_id,
     status: 'completed',
     report: data,
-    ...data,
+    _mock: false,
   };
 
   realScans.set(scan_id, result);
@@ -86,7 +88,7 @@ export async function getScan(scanId) {
 
   if (!result) {
     throw new Error(
-      'Scan result is not available in this browser session. Please start a new scan.'
+      'Scan result is not available. Please start a new scan.'
     );
   }
 
@@ -94,8 +96,6 @@ export async function getScan(scanId) {
 }
 
 // ---- WATCH SCAN ----
-// Kept for compatibility with existing frontend components.
-// Real API returns the completed report immediately.
 
 export function watchScan(
   id,
@@ -113,10 +113,7 @@ export function watchScan(
 
       if (isFailed(result.status)) {
         onFailed?.(result);
-        return;
-      }
-
-      if (isDone(result.status)) {
+      } else if (isDone(result.status)) {
         onDone?.(result);
       }
     } catch (error) {
@@ -133,7 +130,7 @@ export function watchScan(
   };
 }
 
-// ---- RISK ADAPTER ----
+// ---- REPORT ADAPTER ----
 
 export { extractRisk } from './reportAdapter.js';
 
@@ -156,7 +153,7 @@ const save = (list) => {
       JSON.stringify(list.slice(0, 50))
     );
   } catch {
-    // Storage unavailable
+    // Browser storage unavailable.
   }
 };
 
@@ -188,14 +185,14 @@ export function validateUrl(raw) {
   const withScheme =
     /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
       ? value
-      : 'https://' + value;
+      : `https://${value}`;
 
   try {
     const url = new URL(withScheme);
 
     if (!['http:', 'https:'].includes(url.protocol)) {
       return {
-        error: 'Only http:// and https:// addresses can be scanned.',
+        error: 'Only HTTP and HTTPS addresses can be scanned.',
       };
     }
 
@@ -214,7 +211,7 @@ export function validateUrl(raw) {
     };
   } catch {
     return {
-      error: 'That address isn’t valid. Try something like https://example.com.',
+      error: 'That address is not valid. Try https://example.com.',
     };
   }
 }
