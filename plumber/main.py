@@ -1,4 +1,5 @@
 
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
@@ -9,9 +10,28 @@ from pydantic import BaseModel, Field
 from plumber.orchestrator import PlumberOrchestrator
 
 
+BOUNCER_URL = os.getenv(
+    "BOUNCER_URL",
+    "http://127.0.0.1:8002/v1/scan",
+)
+
+LIBRARIAN_URL = os.getenv(
+    "LIBRARIAN_URL",
+    "http://127.0.0.1:8001/investigate",
+)
+
+FRONTEND_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 orchestrator = PlumberOrchestrator(
-    bouncer_url="http://127.0.0.1:8002/v1/scan",
-    librarian_url="http://127.0.0.1:8001/investigate",
+    bouncer_url=BOUNCER_URL,
+    librarian_url=LIBRARIAN_URL,
 )
 
 
@@ -31,14 +51,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-# Allow requests from the local Vite frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,10 +61,7 @@ app.add_middleware(
 
 
 class InvestigateRequest(BaseModel):
-    url: str = Field(
-        ...,
-        examples=["https://example.com"],
-    )
+    url: str = Field(..., examples=["https://example.com"])
     pasted_message: str = Field(
         default="",
         examples=["Urgent action required: verify your account"],
@@ -59,6 +71,11 @@ class InvestigateRequest(BaseModel):
 class VerifyReportRequest(BaseModel):
     report_hash: str
     report: Dict[str, Any]
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "plumber"}
 
 
 @app.post("/api/v1/investigate")
