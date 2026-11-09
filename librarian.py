@@ -16,7 +16,12 @@ from tools.security_assessor import SecurityAssessor
 from tools.risk_engine import RiskEngine
 
 
+MAX_RESPONSE_SIZE = 1_000_000
+REQUEST_TIMEOUT = 10
+
+
 def is_safe_url(url):
+    """Allow only HTTP(S) URLs resolving exclusively to public IP addresses."""
 
     try:
         parsed = urlparse(url)
@@ -32,29 +37,33 @@ def is_safe_url(url):
         if parsed.username or parsed.password:
             return False
 
-        ip = ipaddress.ip_address(hostname)
-
-        if not ip.is_global:
+        # Reject localhost and local hostnames.
+        if hostname.lower() == "localhost" or hostname.lower().endswith(".localhost"):
             return False
-
-    except ValueError:
 
         try:
-            addresses = socket.getaddrinfo(hostname, None)
+            # Direct IP address.
+            addresses = [ipaddress.ip_address(hostname)]
+        except ValueError:
+            # Resolve domain and validate every returned IP.
+            resolved = socket.getaddrinfo(
+                hostname,
+                parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+                type=socket.SOCK_STREAM
+            )
 
-            if not addresses:
-                return False
+            addresses = [
+                ipaddress.ip_address(item[4][0])
+                for item in resolved
+            ]
 
-            for address in addresses:
-                ip = ipaddress.ip_address(address[4][0])
-
-                if not ip.is_global:
-                    return False
-
-        except (socket.gaierror, ValueError, OSError):
+        if not addresses:
             return False
 
-    return True
+        return all(address.is_global for address in addresses)
+
+    except (ValueError, TypeError, socket.gaierror, OSError):
+        return False
 
 
 class WebsiteTextExtractor(HTMLParser):
@@ -62,24 +71,18 @@ class WebsiteTextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.text_parts = []
-        self.ignore_content = False
+        self.ignore_tags = set()
 
     def handle_starttag(self, tag, attrs):
-
         if tag in ("script", "style", "noscript"):
-            self.ignore_content = True
+            self.ignore_tags.add(tag)
 
     def handle_endtag(self, tag):
-
-        if tag in ("script", "style", "noscript"):
-            self.ignore_content = False
+        self.ignore_tags.discard(tag)
 
     def handle_data(self, data):
-
-        if not self.ignore_content:
-
+        if not self.ignore_tags:
             cleaned = data.strip()
-
             if cleaned:
                 self.text_parts.append(cleaned)
 
@@ -115,17 +118,51 @@ class Librarian:
 
         return inspect_brand(url, claimed_brand)
 
-    def inspect_website(self, url, claimed_brand=None):
+    def inspect_website(
+        self,
+        url,
+        claimed_brand=None,
+        pasted_message=""
+    ):
+        """
+        Inspect a website and optionally analyse a user-pasted message.
+
+        pasted_message is optional so existing callers remain compatible.
+        """
 
         print("\n[Librarian] Inspecting website...")
 
         if not is_safe_url(url):
-
             return {
                 "url": url,
                 "status": "BLOCKED",
                 "message": "URL failed basic safety checks."
             }
+
+        report = {
+            "url": url,
+            "domain": urlparse(url).hostname,
+            "status": "ANALYZING"
+        }
+
+        # Analyse pasted text independently of website HTML.
+        if isinstance(pasted_message, str) and pasted_message.strip():
+
+            try:
+                print("\n[Librarian] Analysing pasted message...")
+
+                report["pasted_message_analysis"] = (
+                    self.semantic_analyzer.analyze_text(
+                        pasted_message[:10000]
+                    )
+                )
+
+            except Exception as error:
+                report["pasted_message_analysis"] = {
+                    "status": "ERROR",
+                    "message": "Pasted message analysis could not be completed.",
+                    "details": str(error)
+                }
 
         try:
 
@@ -138,106 +175,95 @@ class Librarian:
             print("\n[Librarian] Running Assistant 6...")
             ssl_result = self.ssl_validator.inspect_certificate(url)
 
-            response = requests.get(
+            report.update({
+                "threat_intelligence": threat_result,
+                "community_threat_ledger": community_result,
+                "ssl_certificate": ssl_result
+            })
+
+            print("\n[Librarian] Fetching website...")
+
+            with requests.get(
                 url,
-                timeout=10,
+                timeout=REQUEST_TIMEOUT,
                 allow_redirects=False,
                 headers={
                     "User-Agent": "TrustsheildAI/1.0"
                 },
                 stream=True
-            )
+            ) as response:
 
-            if response.is_redirect:
+                if response.is_redirect:
+                    report.update({
+                        "status": "BLOCKED",
+                        "message": "Redirects are not followed for safety."
+                    })
 
-                response.close()
+                    report["risk_assessment"] = (
+                        self.risk_engine.calculate_risk(report)
+                    )
 
-                report = {
-                    "url": url,
-                    "status": "BLOCKED",
-                    "message": "Redirects are not followed for safety.",
-                    "threat_intelligence": threat_result,
-                    "community_threat_ledger": community_result,
-                    "ssl_certificate": ssl_result
-                }
+                    return report
 
-                report["risk_assessment"] = (
-                    self.risk_engine.calculate_risk(report)
+                print("\n[Librarian] Running Assistant 7...")
+
+                security_result = self.security_assessor.inspect_headers(
+                    url,
+                    response.headers
                 )
 
-                return report
+                report["security_assessment"] = security_result
 
-            print("\n[Librarian] Running Assistant 7...")
-            security_result = self.security_assessor.inspect_headers(
-                url,
-                response.headers
-            )
+                content_type = response.headers.get("Content-Type", "")
 
-            content_type = response.headers.get("Content-Type", "")
+                if "text/html" not in content_type.lower():
+                    report.update({
+                        "status": "UNSUPPORTED",
+                        "message": "Website did not return HTML content."
+                    })
 
-            if "text/html" not in content_type.lower():
+                    report["risk_assessment"] = (
+                        self.risk_engine.calculate_risk(report)
+                    )
 
-                response.close()
+                    return report
 
-                report = {
-                    "url": url,
-                    "status": "UNSUPPORTED",
-                    "message": "Website did not return HTML content.",
-                    "threat_intelligence": threat_result,
-                    "community_threat_ledger": community_result,
-                    "ssl_certificate": ssl_result,
-                    "security_assessment": security_result
-                }
+                content_length = response.headers.get("Content-Length")
 
-                report["risk_assessment"] = (
-                    self.risk_engine.calculate_risk(report)
+                if content_length:
+                    try:
+                        if int(content_length) > MAX_RESPONSE_SIZE:
+                            report.update({
+                                "status": "BLOCKED",
+                                "message": "Website response is too large."
+                            })
+                            return report
+
+                    except ValueError:
+                        report.update({
+                            "status": "ERROR",
+                            "message": "Invalid response size."
+                        })
+                        return report
+
+                html_bytes = response.raw.read(
+                    MAX_RESPONSE_SIZE + 1,
+                    decode_content=True
                 )
 
-                return report
+                encoding = response.encoding or "utf-8"
 
-            content_length = response.headers.get("Content-Length")
-
-            if content_length:
-
-                try:
-
-                    if int(content_length) > 1_000_000:
-                        response.close()
-
-                        return {
-                            "url": url,
-                            "status": "BLOCKED",
-                            "message": "Website response is too large."
-                        }
-
-                except ValueError:
-
-                    response.close()
-
-                    return {
-                        "url": url,
-                        "status": "ERROR",
-                        "message": "Invalid response size."
-                    }
-
-            html = response.raw.read(
-                1_000_001,
-                decode_content=True
-            )
-
-            encoding = response.encoding or "utf-8"
-
-            response.close()
-
-            if len(html) > 1_000_000:
-
-                return {
-                    "url": url,
+            if len(html_bytes) > MAX_RESPONSE_SIZE:
+                report.update({
                     "status": "BLOCKED",
                     "message": "Website response exceeded the size limit."
-                }
+                })
+                return report
 
-            html = html.decode(encoding, errors="replace")
+            html = html_bytes.decode(
+                encoding,
+                errors="replace"
+            )
 
             print("\n[Librarian] Running Assistant 1...")
             credential_result = inspect_html(url, html)
@@ -256,24 +282,17 @@ class Librarian:
             website_text = " ".join(extractor.text_parts)
 
             semantic_result = self.semantic_analyzer.analyze_text(
-                website_text
+                website_text[:10000]
             )
 
             print("\n[Librarian] Investigation completed.")
 
-            report = {
-                "url": url,
-                "domain": urlparse(url).hostname,
+            report.update({
                 "status": "ANALYZED",
-
                 "credential_inspection": credential_result,
                 "brand_inspection": brand_result,
-                "semantic_analysis": semantic_result,
-                "threat_intelligence": threat_result,
-                "community_threat_ledger": community_result,
-                "ssl_certificate": ssl_result,
-                "security_assessment": security_result
-            }
+                "semantic_analysis": semantic_result
+            })
 
             print("\n[Librarian] Calculating final risk score...")
 
@@ -287,9 +306,21 @@ class Librarian:
 
         except requests.RequestException as error:
 
-            return {
-                "url": url,
+            report.update({
                 "status": "ERROR",
                 "message": "Unable to fetch the website.",
                 "details": str(error)
-            }
+            })
+
+            return report
+
+        except Exception as error:
+
+            report.update({
+                "status": "ERROR",
+                "message": "Website investigation could not be completed.",
+                "details": str(error)
+            })
+
+            return report
+
