@@ -2,6 +2,7 @@
 
 01 Project name and one-line description
 Weblyze: paste a link, get a clear risk score and plain-language explanation of whether a website can be trusted, before you click, log in or pay.
+
 02 Problem
 This project answers the problem statement AI-Powered Web Threat Detection & Digital Trust Intelligence: build an intelligent platform that detects phishing and malicious websites by combining threat analysis, web security assessment, certificate validation and collaborative threat intelligence.
 
@@ -13,6 +14,7 @@ The problem goes deeper than fake pages. The statement also points to weaknesses
 
 
 Finally, existing security tools tend to tackle these problems separately. There is no accessible platform that brings intelligent threat detection, website security analysis, certificate validation and collaborative threat intelligence together, and the results are rarely explained in a way everyday users can act on.
+
 03 Solution
 Weblyze is that platform. We are the frontend team: this repository is the user-facing layer, which lets anyone investigate a website and understand the result. Detection and analysis run in the Weblyze backend (built by our teammates as Bouncer, Plumber and Librarian, coordinated by an orchestrator), and the frontend presents what the backend reports in plain language. A user pastes a URL and gets a 0-100 risk score with a classification: Low 0-29 (green), Medium 30-59 (yellow), High Risk 60-79 (orange), Critical 80-100 (red).
 
@@ -36,6 +38,7 @@ Also included: Scan History, and a companion Chrome extension (Manifest V3, sepa
 
 
 Current status: the frontend is complete and runs in a clearly labelled demo mode (sample data marked DEMO DATA). It is built against the agreed backend contract (POST /api/scan, GET /api/scan/{scan_id}) and switches to the real backend with two lines in .env. The threat feed and scan history are stored locally in the browser until the backend provides APIs for them.
+
 04 Demo links and a screenshot
 * Live demo: https://webai23.netlify.app
 
@@ -60,6 +63,7 @@ Area
 	npm
 	Backend 
   python
+	
 	06 Architecture
 flowchart LR
   U["User in browser"] --> UI["React screens<br/>src/pages and src/components"]
@@ -118,6 +122,7 @@ Connect the real backend: set VITE_API_BASE_URL to the backend address and VITE_
 
 
 Production build: npm run build (output in dist/), preview with npm run preview.
+
 08 Disclosures
 Libraries (runtime): React and React DOM 18 (MIT), Axios (MIT). Build tooling: Vite and @vitejs/plugin-react (MIT). Font: Jost via Google Fonts (SIL Open Font License). Loaded from Google's servers at runtime, with a system-font fallback if offline.
 
@@ -129,5 +134,6 @@ AI tools: the code in this repository was written with Claude (AI assistant by A
 
 
 Data: all sample reports, threats and certificates are fictional and marked DEMO DATA. Sample domains use the reserved .example ending, so they never point at real websites. No real scan results, user data or credentials are included.
+
 09 Track
 main
